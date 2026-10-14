@@ -12,6 +12,7 @@ import {SwapParams, ModifyLiquidityParams} from "v4-core/types/PoolOperation.sol
 import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
 
 import {Currency, CurrencyLibrary} from "v4-core/types/Currency.sol";
+import {PoolKey} from "v4-core/types/PoolKey.sol";
 import {PoolId} from "v4-core/types/PoolId.sol";
 
 import {Hooks} from "v4-core/libraries/Hooks.sol";
@@ -46,8 +47,9 @@ contract TestPointsHook is Test, Deployers, ERC1155TokenReceiver {
         token.mint(address(1), 1000 ether);
 
         // Deploy hook to an address that has the proper flags set
+        // 2000 bps = 20% points rate
         uint160 flags = uint160(Hooks.AFTER_SWAP_FLAG);
-        deployCodeTo("PointsHook.sol", abi.encode(manager), address(flags));
+        deployCodeTo("PointsHook.sol", abi.encode(manager, uint256(2000)), address(flags));
 
         // Deploy our hook
         hook = PointsHook(address(flags));
@@ -67,6 +69,10 @@ contract TestPointsHook is Test, Deployers, ERC1155TokenReceiver {
         );
 
         // Add some liquidity to the pool
+        _addLiquidity(key);
+    }
+
+    function _addLiquidity(PoolKey memory poolKey) internal {
         uint160 sqrtPriceAtTickLower = TickMath.getSqrtPriceAtTick(-60);
         uint160 sqrtPriceAtTickUpper = TickMath.getSqrtPriceAtTick(60);
 
@@ -83,7 +89,7 @@ contract TestPointsHook is Test, Deployers, ERC1155TokenReceiver {
         );
 
         modifyLiquidityRouter.modifyLiquidity{value: ethToAdd}(
-            key,
+            poolKey,
             ModifyLiquidityParams({
                 tickLower: -60,
                 tickUpper: 60,
@@ -126,5 +132,49 @@ contract TestPointsHook is Test, Deployers, ERC1155TokenReceiver {
             poolIdUint
         );
         assertEq(pointsBalanceAfterSwap - pointsBalanceOriginal, 2 * 10 ** 14);
+    }
+
+    function test_pointsBps_configured() public view {
+        assertEq(hook.pointsBps(), 2000);
+    }
+
+    function test_swap_customRate() public {
+        // Deploy a second hook with a 10% points rate.
+        // Bit 14 is outside the hook flag mask, so it gives a distinct valid address.
+        uint160 flags2 = uint160(Hooks.AFTER_SWAP_FLAG) | (1 << 14);
+        deployCodeTo(
+            "PointsHook.sol", abi.encode(manager, uint256(1000)), address(flags2)
+        );
+        PointsHook hook2 = PointsHook(address(flags2));
+        assertEq(hook2.pointsBps(), 1000);
+
+        // Initialize a second pool (different fee) using the second hook
+        (PoolKey memory key2, ) = initPool(
+            ethCurrency, tokenCurrency, hook2, 500, SQRT_PRICE_1_1
+        );
+        _addLiquidity(key2);
+
+        uint256 poolId2Uint = uint256(PoolId.unwrap(key2.toId()));
+        uint256 pointsBalanceOriginal = hook2.balanceOf(address(this), poolId2Uint);
+
+        bytes memory hookData = abi.encode(address(this));
+
+        // Swap 0.001 ETH, expect 10% of 0.001 ether = 1 * 10**14 points
+        swapRouter.swap{value: 0.001 ether}(
+            key2,
+            SwapParams({
+                zeroForOne: true,
+                amountSpecified: -0.001 ether,
+                sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            }),
+            PoolSwapTest.TestSettings({
+                takeClaims: false,
+                settleUsingBurn: false
+            }),
+            hookData
+        );
+
+        uint256 pointsBalanceAfterSwap = hook2.balanceOf(address(this), poolId2Uint);
+        assertEq(pointsBalanceAfterSwap - pointsBalanceOriginal, 1 * 10 ** 14);
     }
 }

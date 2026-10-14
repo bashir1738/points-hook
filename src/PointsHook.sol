@@ -15,7 +15,13 @@ import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
 import {Hooks} from "v4-core/libraries/Hooks.sol";
 
 contract PointsHook is BaseHook, ERC1155 {
-    constructor(IPoolManager _manager) BaseHook(_manager) {}
+    /// @notice points minted per wei of ETH spent, in basis points (10000 = 100%)
+    uint256 public immutable pointsBps;
+
+    constructor(IPoolManager _manager, uint256 _pointsBps) BaseHook(_manager) {
+        require(_pointsBps <= 10_000, "pointsBps > 100%");
+        pointsBps = _pointsBps;
+    }
 
     function getHookPermissions()
         public
@@ -59,7 +65,7 @@ contract PointsHook is BaseHook, ERC1155 {
         // We only mint points if user is buying TOKEN with ETH
         if (!swapParams.zeroForOne) return (this.afterSwap.selector, 0);
 
-        // Mint points equal to 20% of the amount of ETH they spent
+        // Mint points equal to pointsBps of the amount of ETH they spent
         // Since its a zeroForOne swap:
         // if amountSpecified < 0:
         //      this is an "exact input for output" swap
@@ -69,7 +75,7 @@ contract PointsHook is BaseHook, ERC1155 {
         //      amount of ETH they spent is equal to BalanceDelta.amount0()
 
         uint256 ethSpendAmount = uint256(int256(-delta.amount0()));
-        uint256 pointsForSwap = ethSpendAmount / 5;
+        uint256 pointsForSwap = (ethSpendAmount * pointsBps) / 10_000;
 
         // Mint the points
         _assignPoints(key.toId(), hookData, pointsForSwap);
