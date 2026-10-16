@@ -10,3 +10,6 @@ evm_version = "cancun"
 optimizer_runs = 800
 via_ir = false
 ffi = true
+
+# limit `forge test --gas-report` output to our own contracts
+gas_reports = ["PointsHook"]

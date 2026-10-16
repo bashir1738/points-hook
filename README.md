@@ -158,3 +158,34 @@ in the case of Adding Liquidity to a pool,
 
 amount0 = -ve
 amount1 = -ve
+
+---
+
+### Testing & deploying
+
+Tests live in `test/PointsHook.t.sol` and cover the three approaches from the workshop:
+
+- **Unit tests** – `test_swap` (happy path) plus `test_swap_noPointsWithoutHookData` / `test_swap_noPointsTokenForEth` (sad paths)
+- **Fuzz tests** – `testFuzz_swap_points_bound` (uses `bound()`) and `testFuzz_swap_points_assume` (uses `vm.assume()`)
+- **Forking** – `TestPointsHookFork` uses a `forked()` modifier to spin up a mainnet fork per test (`MAINNET_RPC_URL` env var, defaults to a public RPC)
+
+```bash
+forge test                       # run everything
+forge test --mc TestPointsHook   # one contract
+forge test --mt test_swap        # one function
+forge test --gas-report          # per-function gas usage
+```
+
+The hook is deployed to a mined address (an address whose `AFTER_SWAP_FLAG` bit is set) using
+`HookMiner` + the CREATE2 deployer proxy:
+
+```bash
+# dry run (simulates, does not send anything)
+forge script script/DeployHook.s.sol --rpc-url $MAINNET_RPC_URL
+
+# broadcast + verify on Etherscan
+forge script script/DeployHook.s.sol --rpc-url $MAINNET_RPC_URL --chain-id 1 --broadcast --verify
+```
+
+`.env` (gitignored) needs `PRIVATE_KEY`, `MAINNET_RPC_URL` and optionally `ETHERSCAN_API_KEY` /
+`POOL_MANAGER` — see `.env.example`.

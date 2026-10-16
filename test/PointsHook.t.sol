@@ -134,6 +134,91 @@ contract TestPointsHook is Test, Deployers, ERC1155TokenReceiver {
         assertEq(pointsBalanceAfterSwap - pointsBalanceOriginal, 2 * 10 ** 14);
     }
 
+    function _swapEthForTokens(uint256 ethIn, bytes memory hookData) internal {
+        swapRouter.swap{value: ethIn}(
+            key,
+            SwapParams({
+                zeroForOne: true,
+                amountSpecified: -int256(ethIn), // Exact input for output swap
+                sqrtPriceLimitX96: TickMath.MIN_SQRT_PRICE + 1
+            }),
+            PoolSwapTest.TestSettings({
+                takeClaims: false,
+                settleUsingBurn: false
+            }),
+            hookData
+        );
+    }
+
+    // Sad path: no hookData means nobody gets points
+    function test_swap_noPointsWithoutHookData() public {
+        uint256 poolIdUint = uint256(PoolId.unwrap(key.toId()));
+
+        _swapEthForTokens(0.001 ether, bytes(""));
+
+        assertEq(hook.balanceOf(address(this), poolIdUint), 0);
+    }
+
+    // Sad path: swapping TOKEN -> ETH (oneForZero) earns no points
+    function test_swap_noPointsTokenForEth() public {
+        uint256 poolIdUint = uint256(PoolId.unwrap(key.toId()));
+        bytes memory hookData = abi.encode(address(this));
+
+        // Swap 10 TOKEN for ETH
+        swapRouter.swap(
+            key,
+            SwapParams({
+                zeroForOne: false,
+                amountSpecified: -1 ether,
+                sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+            }),
+            PoolSwapTest.TestSettings({
+                takeClaims: false,
+                settleUsingBurn: false
+            }),
+            hookData
+        );
+
+        assertEq(hook.balanceOf(address(this), poolIdUint), 0);
+    }
+
+    // Fuzz with bound(): map any input into a safe swap size
+    function testFuzz_swap_points_bound(uint256 ethIn) public {
+        ethIn = bound(ethIn, 1 gwei, 0.01 ether);
+
+        uint256 poolIdUint = uint256(PoolId.unwrap(key.toId()));
+
+        _swapEthForTokens(ethIn, abi.encode(address(this)));
+
+        assertEq(
+            hook.balanceOf(address(this), poolIdUint),
+            (ethIn * hook.pointsBps()) / 10_000
+        );
+    }
+
+    // Fuzz with vm.assume(): keep only inputs that are valid preconditions
+    function testFuzz_swap_points_assume(uint24 ethMicro, address recipient)
+        public
+    {
+        // ETH in must be in (0, 0.01 ETH] so the thin test pool stays in range
+        vm.assume(ethMicro > 0 && ethMicro <= 10_000_000);
+        // ERC1155 cannot mint to the zero address
+        vm.assume(recipient != address(0));
+        // Minting to a contract that doesn't implement ERC1155TokenReceiver reverts,
+        // so only allow EOAs or our own test contract
+        vm.assume(recipient.code.length == 0 || recipient == address(this));
+
+        uint256 ethIn = uint256(ethMicro) * 1 gwei;
+        uint256 poolIdUint = uint256(PoolId.unwrap(key.toId()));
+
+        _swapEthForTokens(ethIn, abi.encode(recipient));
+
+        assertEq(
+            hook.balanceOf(recipient, poolIdUint),
+            (ethIn * hook.pointsBps()) / 10_000
+        );
+    }
+
     function test_pointsBps_configured() public view {
         assertEq(hook.pointsBps(), 2000);
     }
@@ -176,5 +261,43 @@ contract TestPointsHook is Test, Deployers, ERC1155TokenReceiver {
 
         uint256 pointsBalanceAfterSwap = hook2.balanceOf(address(this), poolId2Uint);
         assertEq(pointsBalanceAfterSwap - pointsBalanceOriginal, 1 * 10 ** 14);
+    }
+}
+
+interface IERC20 {
+    function balanceOf(address account) external view returns (uint256);
+}
+
+contract TestPointsHookFork is Test {
+    address constant USDC = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
+    address constant USDC_WHALE = 0x55FE002aefF02F77364de339a1292923A15844B8;
+    // Uniswap v4 PoolManager on mainnet
+    address constant POOL_MANAGER = 0x000000000004444c5dc75cB358380D2e3dE08A90;
+
+    string constant DEFAULT_MAINNET_RPC = "https://ethereum-rpc.publicnode.com";
+
+    uint256 forkId;
+
+    modifier forked() {
+        forkId = vm.createFork(
+            vm.envOr("MAINNET_RPC_URL", DEFAULT_MAINNET_RPC)
+        );
+        vm.selectFork(forkId);
+        _;
+        vm.selectFork(0);
+    }
+
+    function test_fork_usdcWhaleBalance() public forked {
+        uint256 balance = IERC20(USDC).balanceOf(USDC_WHALE);
+        console.log("Whale balance (USDC):", balance / 1e6);
+        assertGt(balance, 100_000 * 1e6, "Whale should have large balance");
+    }
+
+    function test_fork_v4PoolManagerDeployed() public forked {
+        assertGt(
+            POOL_MANAGER.code.length,
+            0,
+            "v4 PoolManager should be deployed on mainnet"
+        );
     }
 }
